@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="si">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SRT Spoken Transformer PRO v4.1</title>
+    <style>
+        :root { --primary: #00d2ff; --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --danger: #ef4444; --success: #10b981; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); padding: 20px; }
+        .container { max-width: 950px; margin: auto; }
+        .upload-section { border: 2px dashed #334155; padding: 30px; text-align: center; border-radius: 15px; background: var(--card); margin-bottom: 20px; }
+        .chunk-box { background: var(--card); margin-top: 15px; padding: 15px; border-radius: 10px; border-left: 5px solid var(--primary); position: relative; }
+        
+        .status-bar { display: flex; justify-content: space-between; align-items: center; background: #000; padding: 8px 15px; border-radius: 5px; margin-bottom: 10px; font-size: 13px; cursor: pointer; transition: 0.3s; border: 1px solid transparent; }
+        .status-bar:hover { border: 1px solid #444; }
+        .status-match { border-color: var(--success); color: var(--success); }
+        .status-miss { border-color: var(--danger); color: var(--danger); }
+        
+        textarea { width: 100%; height: 120px; background: #000; color: #00ffcc; border: 1px solid #334155; border-radius: 5px; padding: 10px; font-size: 13px; margin-top: 10px; font-family: inherit; box-sizing: border-box; }
+        textarea:focus { border-color: var(--primary); outline: none; }
+        
+        button { cursor: pointer; border: none; border-radius: 5px; font-weight: bold; transition: 0.2s; padding: 10px 20px; }
+        .btn-copy { background: var(--primary); color: #000; }
+        .btn-done { background: #f59e0b; color: #000; width: 100%; padding: 20px; font-size: 18px; margin-top: 30px; }
+        
+        .time-display { font-size: 11px; color: #64748b; font-family: monospace; display: block; margin-bottom: 2px; }
+        .updated-text { color: #00ffcc; font-weight: bold; white-space: pre-wrap; display: block; }
+        input[type="file"] { display: none; }
+        .file-label { background: #334155; color: white; padding: 12px 25px; border-radius: 5px; cursor: pointer; display: inline-block; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2 style="text-align: center;">SRT Spoken Transformer PRO <span style="color:var(--primary)">v4.1</span></h2>
+    
+    <div class="upload-section">
+        <label for="srtFile" class="file-label">📂 Open SRT File</label>
+        <input type="file" id="srtFile" accept=".srt">
+        <p id="fileName" style="margin-top:15px; color: #94a3b8;"></p>
+    </div>
+
+    <div id="outputArea"></div>
+    <button id="doneBtn" class="btn-done" style="display:none;" onclick="downloadSRT()">✅ Done & Download Updated SRT</button>
+</div>
+
+<script>
+let srtData = [];
+
+const masterPromptText = `Act as an expert English to Sinhala translator specializing in natural, conversational "Spoken Sinhala" (කටවහර).
+
+STRICT RULES:
+1. Translate all lines into natural Spoken Sinhala.
+2. KEEP the original line number at the start of each line (e.g., 1. Text).
+3. Provide ONLY the translated lines inside a single Markdown code block.
+4. Each entry should be on a new line starting with its ID.
+
+Input Lines:
+`;
+
+window.onload = function() {
+    const savedData = localStorage.getItem('srt_transformer_data');
+    const savedFileName = localStorage.getItem('srt_transformer_filename');
+    if (savedData && savedFileName) {
+        srtData = JSON.parse(savedData);
+        document.getElementById('fileName').innerText = "Restored: " + savedFileName;
+        renderFromData();
+    }
+};
+
+document.getElementById('srtFile').addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    localStorage.removeItem('srt_transformer_data');
+    localStorage.removeItem('srt_transformer_inputs');
+    
+    document.getElementById('fileName').innerText = "Selected: " + file.name;
+    localStorage.setItem('srt_transformer_filename', file.name);
+    
+    const reader = new FileReader();
+    reader.onload = function(event) { parseAndDisplay(event.target.result); };
+    reader.readAsText(file, "UTF-8");
+}, false);
+
+function parseAndDisplay(content) {
+    srtData = [];
+    const blocks = content.trim().split(/\r?\n\s*\r?\n/);
+    blocks.forEach((block) => {
+        const lines = block.split(/\r?\n/).map(l => l.trim());
+        if(lines.length >= 3) {
+            const id = lines[0];
+            const time = lines[1];
+            const originalText = lines.slice(2).join('\n');
+            srtData.push({ id: parseInt(id), time, text: originalText, updatedText: originalText });
+        }
+    });
+    
+    saveToLocal();
+    renderFromData();
+}
+
+function renderFromData() {
+    const outputArea = document.getElementById('outputArea');
+    outputArea.innerHTML = '';
+    
+    const chunkSize = 100;
+    const savedInputs = JSON.parse(localStorage.getItem('srt_transformer_inputs') || "{}");
+
+    for (let i = 0; i < srtData.length; i += chunkSize) {
+        const chunk = srtData.slice(i, i + chunkSize);
+        const chunkIndex = Math.floor(i / chunkSize) + 1;
+        renderChunkUI(chunk, chunkIndex, savedInputs[chunkIndex] || "");
+    }
+    
+    // Refresh text display from existing srtData
+    srtData.forEach(item => {
+        const displayElem = document.getElementById(`text-${item.id}`);
+        if (displayElem) displayElem.innerText = item.updatedText;
+    });
+
+    // Run status update for each chunk based on saved values
+    Object.keys(savedInputs).forEach(idx => {
+        realTimeUpdate(parseInt(idx), savedInputs[idx], false);
+    });
+
+    document.getElementById('doneBtn').style.display = 'block';
+}
+
+function renderChunkUI(chunk, chunkIndex, savedVal) {
+    let copyLines = chunk.map(item => `${item.id}. ${item.text}`).join('\n');
+    let finalPrompt = masterPromptText + "\n" + copyLines;
+
+    const div = document.createElement('div');
+    div.className = 'chunk-box';
+    div.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <strong>කොටස ${chunkIndex} (පේළි ${chunk[0].id} - ${chunk[chunk.length-1].id})</strong>
+            <button class="btn-copy" onclick="fallbackCopy(this, ${chunkIndex})">📋 Copy Prompt</button>
+            <textarea id="hidden-text-${chunkIndex}" style="display:none;">${finalPrompt}</textarea>
+        </div>
+
+        <div class="status-bar" id="status-bar-${chunkIndex}" onclick="showMissingLines(${chunkIndex})">
+            <span>මුල් පේළි: <b>${chunk.length}</b></span>
+            <span id="status-msg-${chunkIndex}">පරිවර්තනය බලාපොරොත්තුවෙන්...</span>
+            <span>හඳුනාගත් පේළි: <b id="current-count-${chunkIndex}">0</b></span>
+        </div>
+
+        <textarea id="input-${chunkIndex}" placeholder="Gemini දුන් Code එක මෙතනට Paste කරන්න..." oninput="realTimeUpdate(${chunkIndex}, this.value, true)">${savedVal}</textarea>
+
+        <div id="preview-${chunkIndex}" style="background:#111; padding:10px; border-radius:5px; font-size:13px; margin-top:10px; max-height: 250px; overflow-y: auto; border: 1px solid #222;">
+            ${chunk.map(item => `
+                <div style="margin-bottom:8px; border-bottom:1px solid #222; padding-bottom:5px;">
+                    <span class="time-display">[${item.id}] ${item.time}</span>
+                    <span id="text-${item.id}" class="updated-text">${item.updatedText}</span>
+                </div>
+            `).join('')}
+        </div>
+    `;
+    document.getElementById('outputArea').appendChild(div);
+}
+
+function realTimeUpdate(chunkIdx, val, shouldSave) {
+    const lines = val.split(/\n(?=\d+[\.\)\s]+)/).filter(l => l.trim() !== '');
+    const startIdx = (chunkIdx - 1) * 100;
+    const chunkData = srtData.slice(startIdx, startIdx + 100);
+    const targetLen = chunkData.length;
+
+    let detectedCount = 0;
+    const statusBar = document.getElementById(`status-bar-${chunkIdx}`);
+    const statusMsg = document.getElementById(`status-msg-${chunkIdx}`);
+    const countDisplay = document.getElementById(`current-count-${chunkIdx}`);
+
+    lines.forEach(line => {
+        const match = line.match(/^(\d+)[\.\)\s]+(.*)/s);
+        if (match) {
+            const id = parseInt(match[1]);
+            const content = match[2].trim();
+            const dataItem = srtData.find(d => d.id === id);
+            if (dataItem) {
+                dataItem.updatedText = content;
+                const displayElem = document.getElementById(`text-${id}`);
+                if (displayElem) displayElem.innerText = content;
+                detectedCount++;
+            }
+        }
+    });
+
+    if (countDisplay) countDisplay.innerText = detectedCount;
+
+    if (statusBar && statusMsg) {
+        if (detectedCount === targetLen) {
+            statusMsg.innerText = "✅ සියල්ල නිවැරදියි!";
+            statusBar.className = "status-bar status-match";
+        } else {
+            const diff = targetLen - detectedCount;
+            statusMsg.innerText = diff > 0 ? `⚠️ පේළි ${diff} ක් අඩුයි!` : `⚠️ පේළි ${Math.abs(diff)} ක් වැඩියි!`;
+            statusBar.className = "status-bar status-miss";
+        }
+    }
+
+    if (shouldSave) {
+        const savedInputs = JSON.parse(localStorage.getItem('srt_transformer_inputs') || "{}");
+        savedInputs[chunkIdx] = val;
+        localStorage.setItem('srt_transformer_inputs', JSON.stringify(savedInputs));
+        saveToLocal();
+    }
+}
+
+function saveToLocal() {
+    localStorage.setItem('srt_transformer_data', JSON.stringify(srtData));
+}
+
+function showMissingLines(chunkIdx) {
+    const startIdx = (chunkIdx - 1) * 100;
+    const chunkData = srtData.slice(startIdx, startIdx + 100);
+    let missing = [];
+    
+    chunkData.forEach(item => {
+        if (item.updatedText === item.text) {
+            missing.push(item.id);
+        }
+    });
+
+    if (missing.length === 0) alert("සියලුම පේළි සාර්ථකව Update වී ඇත!");
+    else alert("මෙම කොටසේ තවම යාවත්කාලීන නොවූ පේළි අංක:\n" + missing.join(", "));
+}
+
+function fallbackCopy(btn, index) {
+    const textArea = document.getElementById(`hidden-text-${index}`);
+    textArea.style.display = 'block';
+    textArea.select();
+    try {
+        document.execCommand('copy');
+        btn.innerText = "✅ Prompt Copied!";
+        setTimeout(() => btn.innerText = "📋 Copy Prompt", 2000);
+    } catch (err) { alert("Copy failed!"); }
+    textArea.style.display = 'none';
+}
+
+function downloadSRT() {
+    let finalSrt = "";
+    srtData.forEach(item => {
+        finalSrt += `${item.id}\n${item.time}\n${item.updatedText}\n\n`;
+    });
+    const blob = new Blob([finalSrt], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = "Updated_Spoken_Sinhala.srt";
+    a.click();
+    
+    localStorage.removeItem('srt_transformer_data');
+    localStorage.removeItem('srt_transformer_inputs');
+    localStorage.removeItem('srt_transformer_filename');
+}
+</script>
+</body>
+</html>
